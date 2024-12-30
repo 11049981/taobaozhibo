@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>直播同步助手</title>
+    <link rel="stylesheet" href="https://fastly.jsdelivr.net/npm/vant@4.8.1/lib/index.css"/>
+    <style>
+        :root {
+            --tb-orange: #ff5000;
+            --tb-light-orange: #ff8c00;
+        }
+
+        html, body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            background-color: #f7f8fa;
+            color: #333;
+        }
+
+        #app {
+            font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+            -webkit-font-smoothing: antialiased;
+            height: 100%;
+        }
+
+        .page-header {
+            background: linear-gradient(to right, var(--tb-orange), var(--tb-light-orange));
+            color: white;
+            padding: 16px;
+            text-align: center;
+            font-size: 18px;
+            position: relative;
+        }
+
+        .account-group {
+            background: white;
+            border-radius: 8px;
+            margin: 12px;
+            padding: 8px;
+        }
+
+        .group-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px;
+            border-bottom: 1px solid #eee;
+        }
+
+        .status-tag {
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+
+        .status-online {
+            background: #e8f5e9;
+            color: #4caf50;
+        }
+
+        .status-offline {
+            background: #fafafa;
+            color: #9e9e9e;
+        }
+
+        .toolbar {
+            padding: 8px 12px;
+            background: white;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .delay-settings {
+            padding: 16px;
+            background: white;
+            margin: 12px;
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <!-- 账号管理页面 -->
+        <div v-if="currentPage === 'accounts'">
+            <div class="page-header">
+                <div>账号管理</div>
+            </div>
+
+            <div class="toolbar">
+                <van-row gutter="8">
+                    <van-col span="12">
+                        <van-button block plain type="primary" icon="plus" @click="showAddGroupDialog = true">
+                            添加分组
+                        </van-button>
+                    </van-col>
+                    <van-col span="12">
+                        <van-button block type="primary" icon="plus" @click="showAddDialog = true">
+                            添加账号
+                        </van-button>
+                    </van-col>
+                </van-row>
+            </div>
+
+            <!-- 账号分组列表 -->
+            <div v-for="group in accountGroups" :key="group.id" class="account-group">
+                <div class="group-header">
+                    <span>{{group.name}} ({{group.accounts.length}})</span>
+                    <van-button size="small" plain type="primary" @click="editGroup(group)">
+                        管理
+                    </van-button>
+                </div>
+                
+                <van-cell-group inset>
+                    <van-cell v-for="account in group.accounts" 
+                             :key="account.id"
+                             :title="account.name">
+                        <template #label>
+                            <span v-if="account.isMain" class="account-tag">主账号</span>
+                            <span class="status-tag" 
+                                  :class="account.online ? 'status-online' : 'status-offline'">
+                                {{account.online ? '在线' : '离线'}}
+                            </span>
+                        </template>
+                        <template #right-icon>
+                            <van-switch v-model="account.isMain" 
+                                      @change="setMainAccount(account)" />
+                        </template>
+                    </van-cell>
+                </van-cell-group>
+            </div>
+        </div>
+
+        <!-- 消息同步页面 -->
+        <div v-if="currentPage === 'sync'">
+            <div class="page-header">
+                <div>消息同步</div>
+            </div>
+
+            <!-- 延迟设置 -->
+            <div class="delay-settings">
+                <van-cell-group inset title="发送设置">
+                    <van-cell title="随机延迟">
+                        <template #right-icon>
+                            <van-switch v-model="settings.randomDelay" />
+                        </template>
+                    </van-cell>
+                    <van-cell title="延迟范围" v-if="settings.randomDelay">
+                        <template #right-icon>
+                            <van-stepper v-model="settings.minDelay" min="0" max="60" />
+                            ~
+                            <van-stepper v-model="settings.maxDelay" min="0" max="60" />
+                            秒
+                        </template>
+                    </van-cell>
+                </van-cell-group>
+            </div>
+
+            <!-- 消息输入和发送 -->
+            <div class="message-box">
+                <van-field
+                    v-model="message"
+                    rows="3"
+                    type="textarea"
+                    placeholder="请输入要同步的消息"
+                    :disabled="!mainAccount"
+                />
+                <van-row gutter="8" style="margin-top: 12px;">
+                    <van-col span="12">
+                        <van-button block plain type="primary" icon="clock" @click="showScheduleDialog = true">
+                            定时发送
+                        </van-button>
+                    </van-col>
+                    <van-col span="12">
+                        <van-button block type="primary" icon="send" 
+                                  :loading="isSending"
+                                  :disabled="!mainAccount || !message"
+                                  @click="sendMessage">
+                            立即发送
+                        </van-button>
+                    </van-col>
+                </van-row>
+            </div>
+
+            <!-- 定时任务列表 -->
+            <van-cell-group inset title="定时任务">
+                <template v-if="scheduledTasks.length">
+                    <van-cell v-for="task in scheduledTasks" 
+                             :key="task.id"
+                             :title="task.message"
+                             :label="'计划时间：' + task.scheduledTime">
+                        <template #right-icon>
+                            <van-button size="small" type="danger" @click="deleteTask(task.id)">
+                                取消
+                            </van-button>
+                        </template>
+                    </van-cell>
+                </template>
+                <van-empty v-else description="暂无定时任务" />
+            </van-cell-group>
+
+            <!-- 发送历史 -->
+            <van-cell-group inset title="发送历史">
+                <template v-if="messageHistory.length">
+                    <van-cell v-for="msg in messageHistory" 
+                             :key="msg.id"
+                             :title="msg.content"
+                             :label="msg.time">
+                        <template #right-icon>
+                            <van-tag :type="msg.status === 'success' ? 'success' : 'warning'">
+                                {{msg.status === 'success' ? '成功' : '失败'}}
+                            </van-tag>
+                        </template>
+                    </van-cell>
+                </template>
+                <van-empty v-else description="暂无发送记录" />
+            </van-cell-group>
+        </div>
+
+        <!-- 底部导航栏 -->
+        <van-tabbar v-model="currentPage">
+            <van-tabbar-item name="accounts" icon="friends-o">账号管理</van-tabbar-item>
+            <van-tabbar-item name="sync" icon="chat-o">消息同步</van-tabbar-item>
+        </van-tabbar>
+
+        <!-- 弹窗组件 -->
+        <!-- 添加账号弹窗 -->
+        <van-dialog v-model:show="showAddDialog"
+                   title="添加账号"
+                   show-cancel-button
+                   @confirm="saveAccount">
+            <van-field v-model="newAccount.name"
+                      label="账号名称"
+                      placeholder="请输入账号名称" />
+            <van-field v-model="newAccount.groupId"
+                      label="选择分组"
+                      is-link
+                      readonly
+                      placeholder="请选择分组"
+                      @click="showGroupPicker = true" />
+        </van-dialog>
+
+        <!-- 分组选择器 -->
+        <van-popup v-model:show="showGroupPicker" position="bottom">
+            <van-picker
+                :columns="accountGroups.map(g => g.name)"
+                @confirm="selectGroup"
+                @cancel="showGroupPicker = false"
+                show-toolbar
+            />
+        </van-popup>
+
+        <!-- 添加分组弹窗 -->
+        <van-dialog v-model:show="showAddGroupDialog"
+                   title="添加分组"
+                   show-cancel-button
+                   @confirm="saveGroup">
+            <van-field v-model="newGroupName"
+                      label="分组名称"
+                      placeholder="请输入分组名称" />
+        </van-dialog>
+
+        <!-- 定时发送弹窗 -->
+        <van-dialog v-model:show="showScheduleDialog"
+                   title="定时发送"
+                   show-cancel-button
+                   @confirm="scheduleMessage">
+            <van-field v-model="scheduleTime"
+                      label="发送时间"
+                      is-link
+                      readonly
+                      placeholder="请选择发送时间"
+                      @click="showDatetimePicker = true" />
+        </van-dialog>
+
+        <!-- 时间选择器 -->
+        <van-popup v-model:show="showDatetimePicker" position="bottom">
+            <van-datetime-picker
+                type="datetime"
+                :min-date="new Date()"
+                @confirm="selectDateTime"
+                @cancel="showDatetimePicker = false"
+            />
+        </van-popup>
+    </div>
+
+    <!-- 引入依赖 -->
+    <script src="https://fastly.jsdelivr.net/npm/vue@3"></script>
+    <script src="https://fastly.jsdelivr.net/npm/vant@4.8.1/lib/vant.min.js"></script>
+    <script src="app.js"></script>
+</body>
+</html> 
